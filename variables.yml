@@ -1,0 +1,14 @@
+hostname: virtualbox
+keymap: br-abnt2
+timezone: America/Fortaleza
+lang: en_US 
+locale: en_US.UTF-8
+editor: vim
+country_code: BR
+country_name: Brazil
+ethernet_device: enp0s3
+drive: /dev/sda
+partitions:
+  root: /dev/sda2
+  boot: /dev/sda1
+root_password: asdzxc

@@ -1,0 +1,212 @@
+#!/bin/bash
+
+#PARSE YAML
+parse_yaml() { #{{{
+   local prefix=$2
+   local s='[[:space:]]*' w='[a-zA-Z0-9_]*' fs=$(echo @|tr @ '\034')
+   sed -ne "s|^\($s\)\($w\)$s:$s\"\(.*\)\"$s\$|\1$fs\2$fs\3|p" \
+        -e "s|^\($s\)\($w\)$s:$s\(.*\)$s\$|\1$fs\2$fs\3|p"  $1 |
+   awk -F$fs '{
+      indent = length($1)/2;
+      vname[indent] = $2;
+      for (i in vname) {if (i > indent) {delete vname[i]}}
+      if (length($3) > 0) {
+         vn=""; for (i=0; i<indent; i++) {vn=(vn)(vname[i])("_")}
+         printf("%s%s%s=\"%s\"\n", "'$prefix'",vn, $2, $3);
+      }
+   }'
+  }
+  #}}}
+
+#READ YAML 
+read_yaml(){ #{{{
+  echo "Reading yaml file"
+  eval $(parse_yaml variables.yml "config_")
+}
+#}}}
+
+#SHOW VARIABLES 
+show_variables(){ #{{{
+  read_yaml
+  echo "KEYMAP": $config_keymap
+  echo "EDITOR": $config_editor
+  echo "COUNTRY CODE": $config_country_code
+  echo "COUNTRY NAME": $config_country_name
+  read 
+}
+#}}}
+
+#VERIFY UEFI 
+verify_uefi(){ #{{{
+  local uefi_dir='/sys/firmware/efi/efivars'
+
+  if [[ -d "$uefi_dir" ]]; then
+    echo "boot in UEFI mode, continue..."
+  else
+    echo "boot in BIOS mode, exiting..."
+    #exit 1
+  fi
+}
+#}}}
+
+#CREATE PARTITIONS 
+create_partitions(){ #{{{
+  local drive="$1"; shift
+  local root_partition="$1"; shift
+  local boot_partition="$1"; shift
+
+  # refreshing GPT
+  sgdisk -o $drive
+
+  # boot partition with 500M
+  sgdisk \
+    -n 1::512M \
+    -t 1:EF00 \
+    -c 1:"boot" \
+    $drive
+
+  # root partition with the rest 
+  sgdisk \
+    -n 2:: \
+    -c 2:"root" \
+    $drive
+
+  format_partitions $root_partition $boot_partition
+  mount_partitions $root_partition $boot_partition
+}
+#}}}
+
+#FORMAT PARTITIONS
+format_partitions(){ #{{{
+  local root_partition="$1"; shift
+  local boot_partition="$1"; shift
+
+  mkfs.fat -F32 $boot_partition
+  mkfs.ext4 $root_partition
+}
+#}}}
+
+#MOUNT PARTITIONS
+mount_partitions(){ #{{{
+  local root_partition="$1"; shift
+  local boot_partition="$1"; shift
+
+  mount $root_partition /mnt
+  mkdir -p /mnt/boot
+  mount $boot_partition /mnt/boot
+}
+#}}}
+
+#SELECT MIRRORS
+select_mirrors(){ #{{{
+  local country_name="$1"; shift
+  local country_code="$1"; shift
+  
+  url="https://www.archlinux.org/mirrorlist/?country=${country_code}&use_mirror_status=on"
+
+  tmpfile=$(mktemp --suffix=-mirrorlist)
+
+  # Get latest mirror list and save to tmpfile
+  curl -so ${tmpfile} ${url}
+  sed -i 's/^#Server/Server/g' ${tmpfile}
+
+  # Backup and replace current mirrorlist file (if new file is non-zero)
+  if [[ -s ${tmpfile} ]]; then
+   { echo " Backing up the original mirrorlist..."
+     mv -i /etc/pacman.d/mirrorlist /etc/pacman.d/mirrorlist.orig; } &&
+   { echo " Rotating the new list into place..."
+     mv -i ${tmpfile} /etc/pacman.d/mirrorlist; }
+  else
+    echo " Unable to update, could not download list."
+  fi
+  # better repo should go first
+  cp /etc/pacman.d/mirrorlist /etc/pacman.d/mirrorlist.tmp
+  rankmirrors /etc/pacman.d/mirrorlist.tmp > /etc/pacman.d/mirrorlist
+  rm /etc/pacman.d/mirrorlist.tmp
+  # allow global read access (required for non-root yaourt execution)
+  chmod +r /etc/pacman.d/mirrorlist
+} 
+#}}}
+
+#INSTALL BASE
+install_base(){ #{{{
+  pacstrap /mnt base
+  genfstab -L /mnt >> /mnt/etc/fstab
+}
+#}}}
+
+#CONFIGURE SYSTEM
+configure_system(){
+  rm /etc/localtime || :
+  ln -sF /usr/share/zoneinfo/$config_timezone /etc/localtime
+  set_locale $config_locale
+  set_keymap $config_keymap
+  set_hostname $config_hostname
+  set_hosts $config_hostname
+  set_network $config_ethernet_device
+
+  mkinitcpio -p linux
+  set_root_password $config_root_password
+  set_boot_manager
+  finish_installation
+}
+
+set_locale(){
+  cat > /etc/locale.conf <<EOF
+LANG=$config_locale
+EOF
+  locale-gen
+}
+
+set_keymap(){
+  cat > /etc/vconsole.conf <<EOF
+KEYMAP=$config_keymap
+EOF
+}
+
+set_hostname(){
+  cat > /etc/hostname <<EOF
+$config_hostname
+EOF
+}
+
+set_hosts(){
+
+  cat > /etc/hosts <<EOF
+127.0.0.1 localhost.localdomain localhost $config_hostname
+::1       localhost.localdomain localhost $config_hostname
+EOF
+}
+
+set_network(){
+  cat > /etc/netctl/wired <<EOF
+Description="Wired connection"
+Interface=$config_ethernet_device
+Connection=ethernet
+IP=dhcp
+EOF
+
+  netctl enable wired
+  netctl start wired
+}
+
+set_root_password(){
+  echo -ne "$config_root_password\n$config_root_password" | passwd
+}
+
+set_boot_manager(){
+  bootctl --path=/boot install
+
+  cat > /boot/loader/entries/arch.conf <<EOF
+title          Arch Linux
+linux          /vmlinuz-linux
+initrd         /initramfs-linux.img
+options        root=PARTLABEL=root rw
+EOF
+}
+
+finish_installation(){
+  exit
+  umount -R /mnt
+  reboot
+}
