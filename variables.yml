@@ -9,6 +9,10 @@ country_name: Brazil
 ethernet_device: enp0s3
 drive: /dev/sda
 partitions:
-  root: /dev/sda2
-  boot: /dev/sda1
+  lvm: /dev/sda3
+  boot: /dev/sda2
+  efi: /dev/sda1
+  lvm_vol1: swap
+  lvm_vol2: root
+  lvm_vol3: home
 root_password: asdzxc
